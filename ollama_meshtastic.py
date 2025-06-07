@@ -97,9 +97,18 @@ class MeshtasticOllamaGUI:
         # Meshtastic Settings Section
         meshtastic_frame = GUIComponents.create_labeled_frame(self.settings_frame, "Meshtastic Settings")
         
-        # Port Selection
-        port_label = ttk.Label(meshtastic_frame, text="Select Device Port:")
-        port_label.pack(anchor='w', pady=(5, 0))
+        # Connection Type Selection
+        connection_type_label = ttk.Label(meshtastic_frame, text="Connection Type:")
+        connection_type_label.pack(anchor='w', pady=(5,0))
+        self.connection_type_combo = GUIComponents.create_combobox(
+            meshtastic_frame, values=["Serial", "Network"]
+        )
+        self.connection_type_combo.set("Serial") # Default value
+        self.connection_type_combo.bind('<<ComboboxSelected>>', self.on_connection_type_change)
+
+        # Port Selection (Serial)
+        self.port_label = ttk.Label(meshtastic_frame, text="Select Device Port:")
+        self.port_label.pack(anchor='w', pady=(5, 0))
         
         self.port_combo = GUIComponents.create_combobox(meshtastic_frame)
         
@@ -107,6 +116,15 @@ class MeshtasticOllamaGUI:
             meshtastic_frame, "Refresh Ports", self.refresh_ports, pady=5
         )
         
+        # Hostname Input (Network)
+        self.hostname_label = ttk.Label(meshtastic_frame, text="Enter Hostname/IP:")
+        self.hostname_label.pack(anchor='w', pady=(5,0))
+        self.hostname_entry = GUIComponents.create_entry(meshtastic_frame)
+
+        # Initially hide network-specific widgets
+        self.hostname_label.pack_forget()
+        self.hostname_entry.pack_forget()
+
         # Channel Selection
         channel_label = ttk.Label(meshtastic_frame, text="Select Channel:")
         channel_label.pack(anchor='w', pady=(5, 0))
@@ -181,12 +199,38 @@ class MeshtasticOllamaGUI:
             self.model_combo.set(models[0])
     
     def refresh_ports(self):
-        """Refresh the list of available serial ports."""
-        ports = self.meshtastic.get_available_ports()
-        self.port_combo['values'] = ports
-        if ports:
-            self.port_combo.set(ports[0])
+        """Refresh the list of available connection targets (serial ports)."""
+        selected_type = self.connection_type_combo.get()
+        if selected_type == "Serial":
+            ports = self.meshtastic.get_connection_targets() # Use renamed method
+            self.port_combo['values'] = ports
+            if ports:
+                self.port_combo.set(ports[0])
+            else:
+                self.port_combo.set('') # Clear if no ports found
+        # For "Network", do nothing for now (no discovery)
     
+    def on_connection_type_change(self, event=None):
+        """Handle changes in connection type selection."""
+        selected_type = self.connection_type_combo.get()
+        if selected_type == "Serial":
+            self.port_label.pack(anchor='w', pady=(5, 0))
+            self.port_combo.pack(fill='x', padx=5, pady=(0,5))
+            self.refresh_ports_btn.pack(fill='x', padx=5, pady=5)
+
+            self.hostname_label.pack_forget()
+            self.hostname_entry.pack_forget()
+            self.refresh_ports() # Populate serial ports
+        elif selected_type == "Network":
+            self.port_label.pack_forget()
+            self.port_combo.pack_forget()
+            self.refresh_ports_btn.pack_forget()
+
+            self.hostname_label.pack(anchor='w', pady=(5,0))
+            self.hostname_entry.pack(fill='x', padx=5, pady=(0,5))
+            self.port_combo.set('') # Clear port selection
+            self.hostname_entry.delete(0, tk.END) # Clear hostname entry
+
     def toggle_connection(self):
         """Connect to or disconnect from the Meshtastic device."""
         if self.meshtastic.is_connected:
@@ -203,19 +247,43 @@ class MeshtasticOllamaGUI:
             return
         self.ollama.set_model(model)
         
-        # Connect to the device
-        port = self.port_combo.get()
-        if not port:
-            messagebox.showerror("Error", "Please select a port")
+        # Get selected model and set it
+        model = self.model_combo.get()
+        if not model:
+            messagebox.showerror("Error", "Please select an Ollama model")
             return
-            
-        if self.meshtastic.connect(port):
+        self.ollama.set_model(model)
+
+        connection_type = self.connection_type_combo.get()
+        self.meshtastic.connection_type = connection_type.lower() # Update handler's connection type
+
+        target = None
+        if connection_type == "Serial":
+            target = self.port_combo.get()
+            if not target:
+                messagebox.showerror("Error", "Please select a serial port.")
+                return
+        elif connection_type == "Network":
+            target = self.hostname_entry.get()
+            if not target:
+                messagebox.showerror("Error", "Please enter a hostname or IP address.")
+                return
+
+        if not target: # Should not happen if logic above is correct
+            messagebox.showerror("Error", "No connection target specified.")
+            return
+
+        if self.meshtastic.connect(target):
             self.connect_btn.config(text="Disconnect")
-            self.status_label.config(text="Connected")
+            self.status_label.config(text=f"Connected via {connection_type}")
             self.status_label.config(foreground="green")
             self.root.after(2000, self.update_channels)
             # Switch to conversation tab after successful connection
             self.notebook.select(1)  # Select the conversation tab (index 1)
+        else:
+            self.status_label.config(text="Connection Failed")
+            self.status_label.config(foreground="red")
+            # Do not switch tab if connection failed
     
     def disconnect(self):
         """Disconnect from the Meshtastic device."""
@@ -227,6 +295,10 @@ class MeshtasticOllamaGUI:
         self.channel_combo.set('')
         self.channel_combo.config(state='disabled')
         self.start_conv_btn.config(state='disabled')
+        # Reset connection type combo to Serial and refresh UI for it
+        # This ensures a consistent state if user tries to connect again
+        # self.connection_type_combo.set("Serial")
+        # self.on_connection_type_change() # Update UI based on "Serial"
     
     def update_channels(self):
         """Update the channel selection dropdown."""
@@ -234,9 +306,13 @@ class MeshtasticOllamaGUI:
         self.channel_combo.config(state='readonly')
         self.channel_combo['values'] = channel_names
         if channel_names:
-            self.channel_combo.set(channel_names[0])
-            # Explicitly set the Primary channel and enable the start button
+            self.channel_combo.set(channel_names[0]) # Default to first channel (usually Primary)
+            self.meshtastic.set_channel(channel_names[0]) # Ensure handler also knows
             self.start_conv_btn.config(state='normal')
+        else:
+            self.channel_combo.set('')
+            self.channel_combo.config(state='disabled')
+            self.start_conv_btn.config(state='disabled')
     
     def on_channel_select(self, event):
         """Handle channel selection event."""
