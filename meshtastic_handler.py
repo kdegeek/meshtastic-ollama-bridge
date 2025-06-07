@@ -15,6 +15,7 @@
 
 import meshtastic
 import meshtastic.serial_interface
+import meshtastic.tcp_interface
 import serial.tools.list_ports
 import platform
 import time
@@ -24,14 +25,16 @@ from tkinter import messagebox
 class MeshtasticHandler:
     """Handler for Meshtastic device interactions."""
     
-    def __init__(self, logger, on_message_received=None):
+    def __init__(self, logger, on_message_received=None, connection_type="serial"):
         """Initialize the Meshtastic handler.
         
         Args:
             logger: The logger instance
             on_message_received: Callback function for received messages
+            connection_type: "serial" or "network"
         """
         self.logger = logger
+        self.connection_type = connection_type
         self.interface = None
         self.is_connected = False
         self.channels = {}
@@ -39,12 +42,17 @@ class MeshtasticHandler:
         self.on_message_received = on_message_received
         self.MAX_MESSAGE_LENGTH = 200
         
-    def get_available_ports(self):
-        """Get a list of available serial ports.
+    def get_connection_targets(self):
+        """Get a list of available connection targets (serial ports or network hosts).
         
         Returns:
-            List of port names formatted for display
+            List of target names formatted for display
         """
+        if self.connection_type == "network":
+            # Network discovery is not implemented in this step
+            return []
+
+        # Serial connection type
         if platform.system() == 'Windows':
             # On Windows, show both port and description
             ports = []
@@ -91,13 +99,22 @@ class MeshtasticHandler:
             pub.subscribe(self._on_connection, "meshtastic.connection.established")
             
             # Extract just the port name on Windows
-            if platform.system() == 'Windows' and ' (' in port:
+            if self.connection_type == "serial" and platform.system() == 'Windows' and ' (' in port:
                 port = port.split(' (')[0]
                 
             try:
-                self.interface = meshtastic.serial_interface.SerialInterface(
-                    devPath=port
-                )
+                if self.connection_type == "serial":
+                    self.interface = meshtastic.serial_interface.SerialInterface(
+                        devPath=port
+                    )
+                elif self.connection_type == "network":
+                    self.interface = meshtastic.tcp_interface.TCPInterface(
+                        hostname=port
+                    )
+                else:
+                    if self.logger:
+                        self.logger.log(f"Unsupported connection type: {self.connection_type}", "Error")
+                    return False
             except serial.serialutil.SerialException as e:
                 if platform.system() == 'Windows':
                     error_msg = ("Could not open serial port. Make sure no other program is using it.\n"
